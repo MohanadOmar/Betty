@@ -51,11 +51,11 @@ Extract every meeting found this week. For each jurisdiction return exactly:
 - Meeting name
 - Date and time
 - Direct agenda link
-- Key items (infrastructure, water, grants, contracts, consulting, RFPs — 3 max)
+- Key items (infrastructure, water, grants, contracts, consulting, RFPs - 3 max)
 - EMC mention: scan for EMC Strategy Group, Ernie Gonzalez Jr, Janice Gonzalez
 
 If a jurisdiction has no agenda this week write: No agenda found this week.
-If agenda exists but items unclear write: Agenda posted — items require manual review. Include the link.
+If agenda exists but items unclear write: Agenda posted - items require manual review. Include the link.
 Never fabricate. Never use # or *. Cover all 8 jurisdictions.
 
 Format each jurisdiction as:
@@ -64,7 +64,7 @@ JURISDICTION NAME, Texas
 - Date/Time:
 - Agenda link:
 - Key items:
-- EMC mention: None detected / EMC MENTION IDENTIFIED — [exact quote]
+- EMC mention: None detected / EMC MENTION IDENTIFIED - [exact quote]
 """
 
 DAILY_SYS_PROMPT = """
@@ -118,14 +118,14 @@ def fetch_url(url, char_limit=8000):
         )
         if r.status_code == 200:
             content = clean_html(r.text)[:char_limit]
-            print(f"  OK — {len(content)} chars")
+            print(f"  OK - {len(content)} chars")
             return content
         else:
             print(f"  Failed: {r.status_code}")
             return f"STATUS: Failed {r.status_code}"
     except Exception as e:
         print(f"  Error: {e}")
-        return f"STATUS: Error — {str(e)}"
+        return f"STATUS: Error - {str(e)}"
 
 
 def call_perplexity(sys_prompt, user_content, recency_filter="day"):
@@ -175,7 +175,7 @@ def monday_agenda_sweep():
                         agenda_links.append(link)
 
     # Fetch up to 5 agenda detail pages
-    log(f"Found {len(agenda_links)} agenda viewer links — fetching up to 5...")
+    log(f"Found {len(agenda_links)} agenda viewer links - fetching up to 5...")
     for link in agenda_links[:5]:
         log(f"  Fetching agenda detail: {link}")
         detail = fetch_url(link, char_limit=5000)
@@ -228,7 +228,7 @@ def daily_monitoring_sweep():
 
 
 # ─────────────────────────────────────────
-# FRIDAY SWEEP — AGENDA + FULL INTELLIGENCE
+# FRIDAY SWEEP - AGENDA + FULL INTELLIGENCE
 # ─────────────────────────────────────────
 FRIDAY_SYS_PROMPT = """
 You are the EMC Intelligence Agent running the Friday Afternoon Sweep for 
@@ -239,13 +239,13 @@ Deliver a consolidated weekly intelligence summary. Cover:
 2. Texas Legislature and US Congress activity this week
 3. TX-21, TX-23, TX-15, TX-28, TX-34 congressional race developments
 4. New grant announcements and RFP/RFQ postings last 7 days
-5. EMC Strategy Group, Ernie Gonzalez Jr, Janice Gonzalez — any news this week
+5. EMC Strategy Group, Ernie Gonzalez Jr, Janice Gonzalez - any news this week
 
 Never fabricate. Never use # or *. Every section must appear even if empty.
 
 Output format:
 
-PRIORITY — EMC MENTIONS
+PRIORITY - EMC MENTIONS
 [Finding or: Nothing to report.]
 
 LATE AND REVISED AGENDAS
@@ -284,7 +284,7 @@ def friday_sweep():
         content = fetch_url(url, char_limit=5000)
         scraped += f"\n\n{'='*50}\nSOURCE: {url}\n{'='*50}\n{content}\n"
 
-    log(f"Agenda scrape complete — {len(scraped)} chars")
+    log(f"Agenda scrape complete - {len(scraped)} chars")
     log("Sending to Perplexity for Friday weekly wrap...")
 
     result = call_perplexity(
@@ -302,13 +302,13 @@ def friday_sweep():
 
 
 # ─────────────────────────────────────────
-# COMBINED DAILY RUN — 7:30 AM EVERY DAY
+# COMBINED DAILY RUN - 7:30 AM EVERY DAY
 # Runs agenda sweep on Monday, full brief every day,
 # weekly wrap on Friday
 # ─────────────────────────────────────────
 def daily_run():
     today = datetime.now().strftime("%A")
-    log(f"Daily run triggered — {today}")
+    log(f"Daily run triggered - {today}")
 
     if today == "Monday":
         monday_agenda_sweep()
@@ -327,7 +327,7 @@ class HealthCheck(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"EMC Agent — OK")
+        self.wfile.write(b"EMC Agent - OK")
 
     def log_message(self, format, *args):
         pass  # suppress access logs
@@ -355,7 +355,7 @@ if __name__ == "__main__":
     # Schedule daily at 7:30 AM
     schedule.every().day.at("07:30").do(daily_run)
 
-    log("Scheduler running — waiting for next trigger...")
+    log("Scheduler running - waiting for next trigger...")
     while True:
         schedule.run_pending()
         time.sleep(60)
