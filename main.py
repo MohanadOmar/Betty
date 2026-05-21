@@ -339,6 +339,27 @@ def start_health_server():
     log(f"Health check server running on port {port}")
     server.serve_forever()
 
+# Base44 Dashboard
+BASE44_WEBHOOK = os.environ.get("BASE44_WEBHOOK_URL")
+def send_to_dashboard(sweep_type, content):
+    if not BASE44_WEBHOOK:
+        log("No BASE44_WEBHOOK_URL set - skipping dashboard push")
+        return
+    try:
+        payload = {
+            "sweep_type": sweep_type,
+            "timestamp": datetime.now().isoformat(),
+            "content": content
+        }
+        r = requests.post(
+            BASE44_WEBHOOK,
+            json=payload,
+            timeout=10
+        )
+        log(f"Dashboard updated - status {r.status_code}")
+    except Exception as e:
+        log(f"Dashboard push failed - {e}")
+
 
 # ─────────────────────────────────────────
 # ENTRY POINT
