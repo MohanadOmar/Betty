@@ -87,8 +87,8 @@ OR one line headline if something is found.
 
 FINDINGS
 Source | Date
-1-2 sentence summary.
-Why it matters: contract / funding / government relations impact.
+1-2 sentence summary/no important findings for [city] today.
+Why it matters: contract / funding / government relations impact /null.
 
 EARLY SIGNALS
 Any agenda items, upcoming meetings, or indirect indicators worth watching.
@@ -323,6 +323,8 @@ def daily_run():
 
     # EMC monitoring runs every day
     daily_monitoring_sweep()
+    monday_agenda_sweep()
+    friday_sweep()
 
 
 # ─────────────────────────────────────────
