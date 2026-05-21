@@ -345,23 +345,26 @@ def start_health_server():
     server.serve_forever()
 
 # Base44 Dashboard
-BASE44_WEBHOOK = os.environ.get("BASE44_WEBHOOK_URL")
 def send_to_dashboard(sweep_type, content):
-    if not BASE44_WEBHOOK:
-        log("No BASE44_WEBHOOK_URL set - skipping dashboard push")
-        return
     try:
-        payload = {
-            "sweep_type": sweep_type,
-            "timestamp": datetime.now().isoformat(),
-            "content": content
-        }
+        has_priority = "EMC MENTION IDENTIFIED" in content or "PRIORITY" in content
         r = requests.post(
-            BASE44_WEBHOOK,
-            json=payload,
+            "https://api.base44.com/api/apps/6a0f3103a314b1e5be31539b/entities/intelligencebrief/",
+            json={
+                "sweep_type": sweep_type,
+                "timestamp": datetime.now().isoformat(),
+                "content": content,
+                "has_priority": has_priority
+            },
+            headers={
+                "api-key": "ff53594c50e84a37a8d29693b6d1e9ee",
+                "Content-Type": "application/json"
+            },
             timeout=10
         )
         log(f"Dashboard updated - status {r.status_code}")
+        if r.status_code not in [200, 201]:
+            log(f"Dashboard error - {r.text[:300]}")
     except Exception as e:
         log(f"Dashboard push failed - {e}")
 
