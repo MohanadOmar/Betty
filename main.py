@@ -349,7 +349,7 @@ def send_to_dashboard(sweep_type, content):
     try:
         has_priority = "EMC MENTION IDENTIFIED" in content or "PRIORITY" in content
         r = requests.post(
-            "https://api.base44.com/api/apps/6a0f3103a314b1e5be31539b/entities/intelligencebrief/",
+            "https://api.base44.com/api/apps/6a0f3103a314b1e5be31539b/entities/IntelligenceBrief",
             json={
                 "sweep_type": sweep_type,
                 "timestamp": datetime.now().isoformat(),
@@ -357,7 +357,7 @@ def send_to_dashboard(sweep_type, content):
                 "has_priority": has_priority
             },
             headers={
-                "api-key": "ff53594c50e84a37a8d29693b6d1e9ee",
+                "api-key": os.environ.get("BASE44_API_KEY"),
                 "Content-Type": "application/json"
             },
             timeout=10
