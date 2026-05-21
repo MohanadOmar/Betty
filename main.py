@@ -197,6 +197,8 @@ def monday_agenda_sweep():
     print(result)
     print("=" * 60 + "\n")
 
+    send_to_dashboard("monday_agenda", result)
+
 
 # ─────────────────────────────────────────
 # DAILY EMC MONITORING SWEEP
@@ -225,6 +227,8 @@ def daily_monitoring_sweep():
     print("=" * 60)
     print(result)
     print("=" * 60 + "\n")
+
+    send_to_dashboard("daily", result)
 
 
 # ─────────────────────────────────────────
@@ -300,6 +304,7 @@ def friday_sweep():
     print(result)
     print("=" * 60 + "\n")
 
+    send_to_dashboard("friday_weekly", result)
 
 # ─────────────────────────────────────────
 # COMBINED DAILY RUN - 7:30 AM EVERY DAY
