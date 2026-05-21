@@ -348,16 +348,18 @@ def start_health_server():
 def send_to_dashboard(sweep_type, content):
     try:
         has_priority = "EMC MENTION IDENTIFIED" in content or "PRIORITY" in content
+        has_emc_mention = "EMC Strategy Group" in content or "Ernie Gonzalez" in content or "Janice Gonzalez" in content
         r = requests.post(
-            "https://api.base44.com/api/apps/6a0f3103a314b1e5be31539b/entities/IntelligenceBrief",
+            "https://betty-emc-insight.base44.app/api/entities/IntelligenceBrief",
             json={
                 "sweep_type": sweep_type,
                 "timestamp": datetime.now().isoformat(),
                 "content": content,
-                "has_priority": has_priority
+                "has_priority": has_priority,
+                "has_emc_mention": has_emc_mention
             },
             headers={
-                "api-key": os.environ.get("BASE44_API_KEY"),
+                "api_key": os.environ.get("BASE44_API_KEY"),
                 "Content-Type": "application/json"
             },
             timeout=10
