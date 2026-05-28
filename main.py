@@ -203,22 +203,59 @@ def monday_agenda_sweep():
 # ─────────────────────────────────────────
 # DAILY EMC MONITORING SWEEP
 # ─────────────────────────────────────────
+# def daily_monitoring_sweep():
+#     log("Starting Daily EMC Monitoring Sweep...")
+#     scraped = ""
+
+#     for url in NEWS_AND_GOV_URLS:
+#         log(f"Fetching {url}...")
+#         content = fetch_url(url, char_limit=5000)
+#         scraped += f"\n\n{'='*50}\nSOURCE: {url}\n{'='*50}\n{content}\n"
+
+#     log(f"Total scraped content: {len(scraped)} chars")
+#     log("Sending to Perplexity for EMC analysis...")
+
+#     result = call_perplexity(
+#         DAILY_SYS_PROMPT,
+#         f"Analyze this scraped content for EMC mentions and indirect signals:\n\n{scraped}",
+#         recency_filter="day",
+#     )
+
+#     log("Daily EMC Monitoring Sweep complete.")
+#     print("\n" + "=" * 60)
+#     print("DAILY EMC MONITORING BRIEF")
+#     print("=" * 60)
+#     print(result)
+#     print("=" * 60 + "\n")
+
+#     send_to_dashboard("daily", result)
 def daily_monitoring_sweep():
     log("Starting Daily EMC Monitoring Sweep...")
-    scraped = ""
-
-    for url in NEWS_AND_GOV_URLS:
-        log(f"Fetching {url}...")
-        content = fetch_url(url, char_limit=5000)
-        scraped += f"\n\n{'='*50}\nSOURCE: {url}\n{'='*50}\n{content}\n"
-
-    log(f"Total scraped content: {len(scraped)} chars")
-    log("Sending to Perplexity for EMC analysis...")
 
     result = call_perplexity(
         DAILY_SYS_PROMPT,
-        f"Analyze this scraped content for EMC mentions and indirect signals:\n\n{scraped}",
-        recency_filter="day",
+        """Search the web right now for any mentions of EMC Strategy Group, 
+Ernie Gonzalez Jr, or Janice Gonzalez in Texas news, government records, 
+contract awards, meeting minutes, or public announcements in the last 24-48 hours.
+
+Also search for indirect signals in these specific locations:
+- Uvalde, Pleasanton, Floresville, Wilson County, Pecos, Reeves County, Somerset, Pearsall, Poteet Texas
+- Any city council or commissioners court discussions involving third-party consultants
+- Contract amendments, professional services agreements, or grant services mentions
+- Texas Ethics Commission lobbying disclosures
+
+Search these sources specifically:
+- uvaldeleadernews.com
+- pleasantonexpress.com
+- wilsoncountynews.com
+- uvaldetx.gov
+- pleasantontx.gov
+- floresvilletx.gov
+- co.wilson.tx.us
+- ethics.state.tx.us
+
+Report only verified findings from the last 48 hours.""",
+        recency_filter="day"
     )
 
     log("Daily EMC Monitoring Sweep complete.")
