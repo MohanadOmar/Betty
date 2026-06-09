@@ -18,9 +18,9 @@ AGENDA_URLS = [
     "https://www.poteettx.org/AgendaCenter/City-Council-1",
     "https://www.centertexas.org/city-council/agendas-minutes",
     "https://www.pecostx.gov/129",
-    "https://www.pecostx.gov/Calendar.aspx",
+    "https://www.pecostx.gov/calendar.aspx?view=list&CID=0",
     "https://www.somersettx.gov/agendas",
-    "https://www.uvaldetx.gov/government/city_council/agendas___minutes.php",
+    "https://uvaldetx.civicweb.net/Portal/MeetingTypeList.aspx",
     "https://www.co.wilson.tx.us/page/wilson.ccagendas",
 ]
 
