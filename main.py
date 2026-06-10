@@ -54,7 +54,7 @@ AGENDA_URLS = [
     "https://www.poteettx.org/AgendaCenter/City-Council-1",               # Poteet
     "https://www.pecostx.gov/129",                                        # Pecos
     "https://www.pecosedc.com",                                           # PEDC (V2 new)
-    "https://www.reevescounty.org/departments/commissioners",             # Reeves County (V2 new)
+    "https://reevescountytx.civicweb.net/Portal/MeetingSchedule.aspx",             # Reeves County (V2 new)
     "https://www.somersettx.gov/agendas",                                 # Somerset
     "https://uvaldetx.civicweb.net/Portal/MeetingTypeList.aspx",          # Uvalde
     # Removed in V2 (out of monitoring scope):
