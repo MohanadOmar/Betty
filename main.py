@@ -3,27 +3,31 @@ Betty V2 — EMC Strategy Group Intelligence Agent
 =================================================
 Updated from V1 to match the V2 architecture spec:
 
+  * All three sweeps use Perplexity Search directly (no Jina scraping).
+    Monday and Friday sweeps pass the official agenda URL for each
+    jurisdiction as a primary source pointer — Perplexity reads the
+    actual agenda page, dramatically more accurate than blind search
+    or raw HTML scraping.
   * Three sweeps with explicit structure:
       - Daily Sweep   (Property Search + Websites Scraping + Agenda/Lege/Campaign/News)
       - Monday Sweep  (current-week agendas, per-entity output)
       - Friday Sweep  (weekly wrap, late/revised agendas, lege, campaigns, grants)
-  * 8 canonical jurisdictions locked in (V2 monitoring scope)
+  * 8 canonical jurisdictions paired with their agenda URLs as a single
+    source of truth (JURISDICTION_AGENDAS)
   * INDIRECT signals broken out as a named block
   * Per-entity output template enforced for agenda sweeps
   * Critical Instructions header prepended to every prompt
   * Priority tiering (P1/P2/P3) on dashboard payload
 
-Tools: Python • Jina AI • Perplexity API (sonar-pro) • Base44 • Railway
+Tools: Python • Perplexity API (sonar-pro) • Base44 • Railway
 """
 
 import os
-import re
 import time
 import threading
 import schedule
 import requests
 from datetime import datetime
-from bs4 import BeautifulSoup
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 # ─────────────────────────────────────────
@@ -33,34 +37,25 @@ PERPLEXITY_KEY = os.environ.get("PERPLEXITY_KEY")
 BASE44_API_KEY = os.environ.get("BASE44_API_KEY")
 DASHBOARD_URL = "https://betty-emc-insight.base44.app/api/entities/IntelligenceBrief"
 
-# Canonical V2 monitoring scope — 8 jurisdictions.
-# This is the source of truth. Prompts reference this list explicitly.
-JURISDICTIONS = [
-    "Pleasanton, Texas",
-    "Pearsall, Texas",
-    "Poteet, Texas",
-    "Pecos, Texas",
-    "PEDC (Pecos Economic Development Corporation), Texas",
-    "Reeves County, Texas",
-    "Somerset, Texas",
-    "Uvalde, Texas",
+# Canonical V2 monitoring scope — 8 jurisdictions and their official agenda URLs.
+# Single source of truth. Prompts pair each jurisdiction with its URL so
+# Perplexity reads the right page for each entity.
+JURISDICTION_AGENDAS = [
+    ("Pleasanton, Texas",                                       "https://pleasantontx.granicus.com/ViewPublisher.php?view_id=1"),
+    ("Pearsall, Texas",                                         "https://www.cityofpearsall.org/government/city_council.php"),
+    ("Poteet, Texas",                                           "https://www.poteettx.org/AgendaCenter/City-Council-1"),
+    ("Pecos, Texas",                                            "https://www.pecostx.gov/129"),
+    ("PEDC (Pecos Economic Development Corporation), Texas",    "https://www.pecosedc.com"),
+    ("Reeves County, Texas",                                    "https://www.reevescounty.org/departments/commissioners"),
+    ("Somerset, Texas",                                         "https://www.somersettx.gov/agendas"),
+    ("Uvalde, Texas",                                           "https://uvaldetx.civicweb.net/Portal/MeetingTypeList.aspx"),
+    # Removed in V2 (out of monitoring scope):
+    # ("Center, Texas",       "https://www.centertexas.org/city-council/agendas-minutes"),   # East TX, not a V2 jurisdiction
+    # ("Wilson County, Texas", "https://www.co.wilson.tx.us/page/wilson.ccagendas"),         # kept in NEWS_AND_GOV_URLS for indirect signals
 ]
 
-# Agenda URLs — Monday and Friday sweeps scrape these.
-# One URL per V2 jurisdiction where available.
-AGENDA_URLS = [
-    "https://pleasantontx.granicus.com/ViewPublisher.php?view_id=1",      # Pleasanton
-    "https://www.cityofpearsall.org/government/city_council.php",         # Pearsall (V2 new)
-    "https://www.poteettx.org/AgendaCenter/City-Council-1",               # Poteet
-    "https://www.pecostx.gov/129",                                        # Pecos
-    "https://www.pecosedc.com",                                           # PEDC (V2 new)
-    "https://reevescountytx.civicweb.net/Portal/MeetingSchedule.aspx",             # Reeves County (V2 new)
-    "https://www.somersettx.gov/agendas",                                 # Somerset
-    "https://uvaldetx.civicweb.net/Portal/MeetingTypeList.aspx",          # Uvalde
-    # Removed in V2 (out of monitoring scope):
-    # "https://www.centertexas.org/city-council/agendas-minutes",        # Center, TX (East TX, not a V2 jurisdiction)
-    # "https://www.co.wilson.tx.us/page/wilson.ccagendas",               # Wilson County (kept in NEWS_AND_GOV_URLS for indirect signals)
-]
+JURISDICTIONS = [j for j, _ in JURISDICTION_AGENDAS]
+AGENDA_URLS = [u for _, u in JURISDICTION_AGENDAS]
 
 # Supplementary news / gov sites — referenced by the Daily Sweep prompt
 # for indirect signal detection (contract awards, RFPs, ethics filings, etc.)
@@ -269,35 +264,6 @@ Friday weekly wrap complete. Next sweep: Monday at 7:30 AM CT.
 # ─────────────────────────────────────────
 # HELPERS
 # ─────────────────────────────────────────
-def clean_html(html):
-    soup = BeautifulSoup(html, "html.parser")
-    for tag in soup(["script", "style", "nav", "footer", "header", "meta", "link"]):
-        tag.decompose()
-    text = soup.get_text(separator="\n")
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
-    return "\n".join(lines)
-
-
-def fetch_url(url, char_limit=8000):
-    """Fetch a URL via Jina Reader, clean it, and truncate."""
-    try:
-        r = requests.get(
-            f"https://r.jina.ai/{url}",
-            headers={"X-Return-Format": "markdown"},
-            timeout=30,
-        )
-        if r.status_code == 200:
-            content = clean_html(r.text)[:char_limit]
-            print(f"  OK - {len(content)} chars")
-            return content
-        else:
-            print(f"  Failed: {r.status_code}")
-            return f"STATUS: Failed {r.status_code}"
-    except Exception as e:
-        print(f"  Error: {e}")
-        return f"STATUS: Error - {str(e)}"
-
-
 def call_perplexity(sys_prompt, user_content, recency_filter="day"):
     """Call Perplexity sonar-pro with system + user messages."""
     response = requests.post(
@@ -348,40 +314,42 @@ def classify_priority(content):
     return "P3"
 
 
+def jurisdiction_url_block():
+    """Format the jurisdiction → agenda URL pairing for inclusion in prompts."""
+    lines = ["PRIMARY SOURCES — read these official URLs directly for each jurisdiction:"]
+    for j, u in JURISDICTION_AGENDAS:
+        lines.append(f"  - {j}\n      {u}")
+    return "\n".join(lines)
+
+
 # ─────────────────────────────────────────
-# MONDAY AGENDA SWEEP
+# MONDAY AGENDA SWEEP — Perplexity Search against the official agenda URLs
 # ─────────────────────────────────────────
 def monday_agenda_sweep():
     log("Starting Monday Morning Agenda Sweep (V2)...")
-    scraped = ""
-    agenda_links = []
 
-    for url in AGENDA_URLS:
-        log(f"Fetching {url}...")
-        content = fetch_url(url, char_limit=8000)
-        scraped += f"\n\n{'='*50}\nSOURCE: {url}\n{'='*50}\n{content}\n"
+    user_query = f"""Run the V2 Monday Morning Agenda Sweep now.
 
-        # Extract AgendaViewer / agenda detail links for follow-up fetching
-        for line in content.split("\n"):
-            if "AgendaViewer" in line or "agenda" in line.lower():
-                links = re.findall(r"https?://[^\s\)\"]+", line)
-                for link in links:
-                    if "AgendaViewer" in link and link not in agenda_links:
-                        agenda_links.append(link)
+{jurisdiction_url_block()}
 
-    log(f"Found {len(agenda_links)} agenda viewer links - fetching up to 5...")
-    for link in agenda_links[:5]:
-        log(f"  Fetching agenda detail: {link}")
-        detail = fetch_url(link, char_limit=5000)
-        scraped += f"\n\n{'='*50}\nAGENDA DETAIL: {link}\n{'='*50}\n{detail}\n"
+For EACH of the 8 jurisdictions above:
+  1. Read the official agenda URL listed for that jurisdiction.
+  2. Identify any meetings scheduled for the current week (Monday-Friday)
+     and any meetings happening today or within the next 48 hours.
+  3. Pull meeting name, date/time, the direct agenda link (PDF or sub-page),
+     and 2-3 key items focused on infrastructure, water/utilities,
+     funding/grants, or legislative/intergovernmental coordination.
+  4. Scan the agenda text for any mention of EMC Strategy Group,
+     Ernie Gonzalez Jr, or Janice Gonzalez. If found, quote the exact language.
+  5. If no meeting is posted for that jurisdiction this week, say so explicitly.
 
-    log(f"Total scraped content: {len(scraped)} chars")
-    log("Sending to Perplexity for analysis...")
+Cover all 8 jurisdictions. Use the per-entity output template from your
+system instructions.
+"""
 
     result = call_perplexity(
         AGENDA_SYS_PROMPT,
-        f"Extract all meeting agendas from this scraped content. "
-        f"Cover all 8 monitored jurisdictions:\n\n{scraped}",
+        user_query,
         recency_filter="week",
     )
 
@@ -393,6 +361,7 @@ def monday_agenda_sweep():
     print("=" * 60 + "\n")
 
     send_to_dashboard("monday_agenda", result)
+
 
 
 # ─────────────────────────────────────────
@@ -437,32 +406,31 @@ News/Media). Report only verified findings from the last 48 hours.
 
 
 # ─────────────────────────────────────────
-# FRIDAY SWEEP — WEEKLY WRAP
+# FRIDAY SWEEP — WEEKLY WRAP (Perplexity Search against the agenda URLs)
 # ─────────────────────────────────────────
 def friday_sweep():
     log("Starting Friday Afternoon Weekly Wrap (V2)...")
-    scraped = ""
 
-    # Re-scrape agendas to catch late/revised postings since Monday
-    for url in AGENDA_URLS:
-        log(f"Fetching {url}...")
-        content = fetch_url(url, char_limit=5000)
-        scraped += f"\n\n{'='*50}\nSOURCE: {url}\n{'='*50}\n{content}\n"
+    user_query = f"""Run the V2 Friday Weekly Wrap now.
 
-    log(f"Agenda scrape complete - {len(scraped)} chars")
-    log("Sending to Perplexity for Friday weekly wrap...")
+{jurisdiction_url_block()}
 
-    user_query = f"""Run the V2 Friday Weekly Wrap. Analyze this week's scraped agenda
-content with emphasis on late-posted or revised agendas since Monday.
-Also pull in Texas Legislature, US Congress, TX-21/23/15/28/34 campaign
-intelligence, and any new grant or RFP announcements from the last 7 days.
+AGENDA RE-CHECK — for each of the 8 jurisdictions above, re-read the official
+agenda URL with emphasis on:
+  - Agendas posted in the last 48-72 hours
+  - Late-posted or revised agendas since Monday's sweep
+  - Meetings that may have been missed earlier in the week
 
-Monitored jurisdictions:
-{chr(10).join(f"  - {j}" for j in JURISDICTIONS)}
+If a jurisdiction has nothing new since Monday, say so for that jurisdiction.
 
-Scraped agenda content:
+ALSO COVER in your output:
+  - Texas Legislature and US Congress activity this week
+  - Congressional races TX-21, TX-23, TX-15, TX-28, TX-34
+  - New grant announcements and RFP/RFQ postings from the last 7 days
+  - Any EMC Strategy Group, Ernie Gonzalez Jr, or Janice Gonzalez news this week
 
-{scraped}
+Use the Friday output format from your system instructions. Every section must
+appear even if empty.
 """
 
     result = call_perplexity(
@@ -495,9 +463,8 @@ def daily_run():
         friday_sweep()
 
     # Daily EMC monitoring runs every day
-    # daily_monitoring_sweep()
-    monday_agenda_sweep()
-    friday_sweep()
+    daily_monitoring_sweep()
+
 
 # ─────────────────────────────────────────
 # BASE44 DASHBOARD POST
