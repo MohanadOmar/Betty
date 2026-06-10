@@ -495,8 +495,9 @@ def daily_run():
         friday_sweep()
 
     # Daily EMC monitoring runs every day
-    daily_monitoring_sweep()
-
+    # daily_monitoring_sweep()
+    monday_agenda_sweep()
+    friday_sweep()
 
 # ─────────────────────────────────────────
 # BASE44 DASHBOARD POST
