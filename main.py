@@ -59,7 +59,7 @@ AGENDA_URLS = [
     "https://uvaldetx.civicweb.net/Portal/MeetingTypeList.aspx",          # Uvalde
     # Removed in V2 (out of monitoring scope):
     # "https://www.centertexas.org/city-council/agendas-minutes",        # Center, TX (East TX, not a V2 jurisdiction)
-    # "https://www.co.wilson.tx.us/page/wilson.ccagendas",               # Wilson County (kept in NEWS_AND_GOV_URLS for indirect signals)
+    "https://www.co.wilson.tx.us/page/wilson.ccagendas",               # Wilson County (kept in NEWS_AND_GOV_URLS for indirect signals)
 ]
 
 # Supplementary news / gov sites — referenced by the Daily Sweep prompt
