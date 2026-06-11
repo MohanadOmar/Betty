@@ -358,7 +358,7 @@ def monday_agenda_sweep():
 
     for url in AGENDA_URLS:
         log(f"Fetching {url}...")
-        content = fetch_url(url, char_limit=8000)
+        content = fetch_url(url, char_limit=15000)
         scraped += f"\n\n{'='*50}\nSOURCE: {url}\n{'='*50}\n{content}\n"
 
         # Extract AgendaViewer / agenda detail links for follow-up fetching
