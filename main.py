@@ -139,7 +139,7 @@ for EMC Strategy Group.
 {CRITICAL_INSTRUCTIONS}
 
 TIMEFRAME: Current week (Monday through Friday), including any meetings
-happening today or within the next 48 hours.
+happening today or within the next 48 hours ONLY.
 
 FOR EACH JURISDICTION, extract:
   - Meeting name
