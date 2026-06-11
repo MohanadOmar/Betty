@@ -511,6 +511,8 @@ def daily_run():
 
     # Daily EMC monitoring runs every day
     daily_monitoring_sweep()
+    monday_agenda_sweep()
+    friday_sweep()
 
 
 # ─────────────────────────────────────────
