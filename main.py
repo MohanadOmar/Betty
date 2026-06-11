@@ -1,29 +1,23 @@
 """
 Betty V2 — EMC Strategy Group Intelligence Agent
 =================================================
-Architecture (per V2 functionality spec):
+Updated from V1 to match the V2 architecture spec:
 
-  DAILY SWEEP   (runs every day)
-    Jina scrapes the news/gov URLs → Perplexity synthesizes a brief
-    against the Daily prompt (Property Search + Websites Scraping +
-    Agenda Monitoring + Legislative + Campaign + News/Media).
+  * Three sweeps with explicit structure:
+      - Daily Sweep   (Property Search + Websites Scraping + Agenda/Lege/Campaign/News)
+      - Monday Sweep  (current-week agendas, per-entity output)
+      - Friday Sweep  (weekly wrap, late/revised agendas, lege, campaigns, grants)
+  * 8 canonical jurisdictions locked in (V2 monitoring scope)
+  * INDIRECT signals broken out as a named block
+  * Per-entity output template enforced for agenda sweeps
+  * Critical Instructions header prepended to every prompt
+  * Priority tiering (P1/P2/P3) on dashboard payload
 
-  MONDAY SWEEP  (Monday only, in addition to Daily)
-    Per-URL Perplexity calls — one focused call per official agenda URL.
-    Plus per-district Perplexity calls — one per Congressional race
-    (TX-15, TX-21, TX-23, TX-28, TX-34).
-    No Jina scraping; once-a-week sweep, Perplexity-only for accuracy.
-
-  FRIDAY SWEEP  (Friday only, in addition to Daily)
-    Same per-URL pattern as Monday — one Perplexity call per agenda URL,
-    emphasizing late or revised postings since Monday.
-    Per-district calls included to support the CAMPAIGN INTELLIGENCE
-    section of the weekly wrap output.
-
-Tools: Python • Jina AI (Daily only) • Perplexity sonar-pro • Base44 • Railway
+Tools: Python • Jina AI • Perplexity API (sonar-pro) • Base44 • Railway
 """
 
 import os
+import re
 import time
 import threading
 import schedule
@@ -39,28 +33,38 @@ PERPLEXITY_KEY = os.environ.get("PERPLEXITY_KEY")
 BASE44_API_KEY = os.environ.get("BASE44_API_KEY")
 DASHBOARD_URL = "https://betty-emc-insight.base44.app/api/entities/IntelligenceBrief"
 
-# Canonical V2 monitoring scope — 8 jurisdictions paired with their official
-# agenda URLs. Single source of truth.
-JURISDICTION_AGENDAS = [
-    ("Pleasanton, Texas",                                       "https://pleasantontx.granicus.com/ViewPublisher.php?view_id=1"),
-    ("Pearsall, Texas",                                         "https://www.cityofpearsall.org/government/city_council.php"),
-    ("Poteet, Texas",                                           "https://www.poteettx.org/AgendaCenter/City-Council-1"),
-    ("Pecos, Texas",                                            "https://www.pecostx.gov/129"),
-    ("PEDC (Pecos Economic Development Corporation), Texas",    "https://www.pecosedc.com"),
-    ("Reeves County, Texas",                                    "https://www.reevescounty.org/departments/commissioners"),
-    ("Somerset, Texas",                                         "https://www.somersettx.gov/agendas"),
-    ("Uvalde, Texas",                                           "https://uvaldetx.civicweb.net/Portal/MeetingTypeList.aspx"),
+# Canonical V2 monitoring scope — 8 jurisdictions.
+# This is the source of truth. Prompts reference this list explicitly.
+JURISDICTIONS = [
+    "Pleasanton, Texas",
+    "Pearsall, Texas",
+    "Poteet, Texas",
+    "Pecos, Texas",
+    "PEDC (Pecos Economic Development Corporation), Texas",
+    "Reeves County, Texas",
+    "Somerset, Texas",
+    "Uvalde, Texas",
 ]
 
-JURISDICTIONS = [j for j, _ in JURISDICTION_AGENDAS]
-AGENDA_URLS = [u for _, u in JURISDICTION_AGENDAS]
+# Agenda URLs — Monday and Friday sweeps scrape these.
+# One URL per V2 jurisdiction where available.
+AGENDA_URLS = [
+    "https://pleasantontx.granicus.com/ViewPublisher.php?view_id=1",      # Pleasanton
+    "https://www.cityofpearsall.org/government/city_council.php",         # Pearsall (V2 new)
+    "https://www.poteettx.org/AgendaCenter/City-Council-1",               # Poteet
+    "https://www.pecostx.gov/129",                                        # Pecos
+    "https://www.pecosedc.com",                                           # PEDC (V2 new)
+    "https://www.reevescounty.org/departments/commissioners",             # Reeves County (V2 new)
+    "https://www.somersettx.gov/agendas",                                 # Somerset
+    "https://uvaldetx.civicweb.net/Portal/MeetingTypeList.aspx",          # Uvalde
+    # Removed in V2 (out of monitoring scope):
+    # "https://www.centertexas.org/city-council/agendas-minutes",        # Center, TX (East TX, not a V2 jurisdiction)
+    # "https://www.co.wilson.tx.us/page/wilson.ccagendas",               # Wilson County (kept in NEWS_AND_GOV_URLS for indirect signals)
+]
 
-# Congressional races monitored — used by Monday and Friday for per-district
-# news calls.
-CONGRESSIONAL_DISTRICTS = ["TX-15", "TX-21", "TX-23", "TX-28", "TX-34"]
-
-# News and gov sources for the Daily Sweep — Jina scrapes these and feeds
-# the content into the Perplexity synthesis call.
+# Supplementary news / gov sites — referenced by the Daily Sweep prompt
+# for indirect signal detection (contract awards, RFPs, ethics filings, etc.)
+# These are NOT scraped directly; Perplexity uses them as a domain allowlist hint.
 NEWS_AND_GOV_URLS = [
     "https://www.uvaldeleadernews.com",
     "https://www.pleasantonexpress.com",
@@ -104,95 +108,97 @@ INDIRECT_SIGNALS = """INDIRECT SIGNALS to flag even when EMC is not named:
 - Texas Ethics Commission lobbying disclosures
 """
 
-# ─────────────────────────────────────────
-# PROMPTS — per call type
-# ─────────────────────────────────────────
-
-# Used by per-URL agenda calls (Monday and Friday)
-JURISDICTION_AGENDA_SYS_PROMPT = f"""You are the EMC Intelligence Agent reading one
-official agenda page for a Texas jurisdiction on behalf of EMC Strategy Group.
-
-{EMC_PRINCIPALS}
-
-{CRITICAL_INSTRUCTIONS}
-
-Read the URL the user provides. Find meetings scheduled for the current week
-(Monday through Friday) including any same-day meetings within the next 48 hours.
-For Friday-context calls, also flag late-posted or revised agendas since Monday.
-
-Scan agenda text for any mention of EMC Strategy Group, Ernie Gonzalez Jr, or
-Janice Gonzalez. If found, quote the exact language.
-
-{INDIRECT_SIGNALS}
-
-OUTPUT FORMAT (exactly this template, plain text):
+PER_ENTITY_FORMAT = """PER-ENTITY OUTPUT FORMAT (use exactly this template for each jurisdiction):
 
 JURISDICTION NAME, Texas
 - Meeting:
 - Date/Time:
 - Agenda Link:
-- Key Items: (2-3 max, focus on infrastructure / water / utilities / funding /
-  grants / legislative coordination)
+- Key Items: (2-3 max, focus on infrastructure / water / utilities / funding / grants / legislative coordination)
 - EMC Mention: None detected
   OR
   EMC MENTION IDENTIFIED — "[exact quoted language]"
 
-If no meeting found for this jurisdiction this week, write:
+If no meeting found for a jurisdiction this week, write:
 JURISDICTION NAME, Texas
 - No meeting agenda found for this week.
 """
 
-# Used by per-district news calls (Monday and Friday)
-DISTRICT_NEWS_SYS_PROMPT = f"""You are the EMC Intelligence Agent gathering campaign
-and political intelligence for EMC Strategy Group on Texas Congressional races.
+JURISDICTION_BLOCK = "MONITORED JURISDICTIONS (cover all 8 in your output):\n" + \
+    "\n".join(f"  {i+1}. {j}" for i, j in enumerate(JURISDICTIONS))
+
+# ─────────────────────────────────────────
+# PROMPTS (V2)
+# ─────────────────────────────────────────
+AGENDA_SYS_PROMPT = f"""You are the EMC Intelligence Agent running the Monday Morning Agenda Sweep
+for EMC Strategy Group.
+
+{EMC_PRINCIPALS}
+{JURISDICTION_BLOCK}
 
 {CRITICAL_INSTRUCTIONS}
 
-Focus on candidate developments, withdrawals, endorsements, primary results, and
-material changes. Recent only — last 7 days. Use credible news outlets and
-official campaign sources.
+TIMEFRAME: Current week (Monday through Friday), including any meetings
+happening today or within the next 48 hours.
 
-OUTPUT FORMAT (plain text, exactly this template):
+FOR EACH JURISDICTION, extract:
+  - Meeting name
+  - Date and time
+  - Direct agenda link (PDF or webpage)
+  - Key items (2-3 max), focused on infrastructure, water/utilities,
+    funding/grants, or legislative/intergovernmental coordination
+  - EMC mention scan (use exact quoted language if found)
 
-[DISTRICT]
-- [One paragraph summary of material developments in the last 7 days, or:]
-- Nothing material to report.
+{INDIRECT_SIGNALS}
+
+{PER_ENTITY_FORMAT}
+
+End your response with this status line:
+STATUS: Monday agenda sweep complete. Cover all 8 jurisdictions above.
 """
 
-# Used by the Daily synthesis call after Jina scraping
-DAILY_SYS_PROMPT = f"""You are the EMC Intelligence Agent running the Daily EMC
-Monitoring Sweep for EMC Strategy Group.
+DAILY_SYS_PROMPT = f"""You are the EMC Intelligence Agent running the Daily EMC Monitoring Sweep
+for EMC Strategy Group.
 
 {EMC_PRINCIPALS}
-
-MONITORED JURISDICTIONS:
-{chr(10).join(f"  - {j}" for j in JURISDICTIONS)}
+{JURISDICTION_BLOCK}
 
 {CRITICAL_INSTRUCTIONS}
 
 TIMEFRAME: Last 24-48 hours only.
 
-You will receive scraped content from EMC's monitored news and government
-sources. Analyze it AND run a live Perplexity search for any additional recent
-developments. Cover all six areas:
+SEARCH SCOPE — cover all six of these areas in one synthesized brief:
 
 1. PROPERTY SEARCH — Direct mentions of EMC Strategy Group, Ernie Gonzalez Jr,
-   or Janice Gonzalez.
-2. WEBSITES SCRAPING — Local/regional news, city council agendas, government
-   sites, contract awards/amendments/grant agreements/RFPs, Texas Ethics
-   Commission lobbying disclosures.
-3. AGENDA MONITORING — References to EMC, consulting services, contracts, RFPs.
-4. LEGISLATIVE AND POLICY — Texas Legislature and U.S. Congress activity.
-5. CAMPAIGN AND POLITICAL — Brief mention if anything urgent broke today.
-6. NEWS AND MEDIA — Credible local/regional news affecting EMC clients.
+   or Janice Gonzalez anywhere on the public web.
+
+2. WEBSITES SCRAPING — Scan local and regional news outlets (including small
+   sources), city council agendas/minutes/PDFs, government and municipal
+   websites, contract awards/amendments/grant agreements/RFPs, and Texas Ethics
+   Commission lobbying disclosures if relevant.
+
+3. AGENDA MONITORING (Municipal and County) — Review upcoming agendas for the
+   monitored cities and counties. Identify references to EMC Strategy Group,
+   consulting services, contracts, or RFPs. Track meeting dates and times.
+
+4. LEGISLATIVE AND POLICY MONITORING — Texas Legislature and U.S. Congress.
+   Bills, hearings, committee activity, funding opportunities tied to client
+   priorities.
+
+5. CAMPAIGN AND POLITICAL INTELLIGENCE — Congressional races TX-21, TX-23,
+   TX-15, TX-28, TX-34. Candidate developments, withdrawals, endorsements,
+   major updates.
+
+6. NEWS AND MEDIA MONITORING — Credible local and regional news sources,
+   policy updates, political developments affecting EMC clients.
 
 {INDIRECT_SIGNALS}
 
-OUTPUT FORMAT (exactly this structure):
+OUTPUT FORMAT (use exactly this structure):
 
 SUMMARY
-[One line: "No new developments in the last 48 hours" OR a one-line headline
-if something is found.]
+[One line: "No new developments in the last 48 hours" OR a one-line headline if
+something is found.]
 
 FINDINGS
 For each finding:
@@ -203,58 +209,67 @@ For each finding:
 If no findings: "No material findings in the last 48 hours."
 
 EARLY SIGNALS
-[Any agenda items, upcoming meetings, or indirect indicators worth watching.
-If none: "No early signals at this time."]
+Any agenda items, upcoming meetings, or indirect indicators worth watching.
+If none: "No early signals at this time."
 
 STATUS
 Ongoing monitoring continues. Next daily sweep tomorrow 7:30 AM CT.
 """
 
-# Used to wrap the per-URL and per-district results into a Monday brief
-MONDAY_WRAP_HEADER = """MONDAY MORNING AGENDA SWEEP
-{date}
+FRIDAY_SYS_PROMPT = f"""You are the EMC Intelligence Agent running the Friday Afternoon Weekly Wrap
+for EMC Strategy Group.
 
-AGENDAS — Monitored Jurisdictions (current week, Monday-Friday)
-================================================================
-{agendas}
+{EMC_PRINCIPALS}
+{JURISDICTION_BLOCK}
 
-CAMPAIGN INTELLIGENCE — Texas Congressional Races
-================================================================
-{districts}
+{CRITICAL_INSTRUCTIONS}
+
+TIMEFRAME: Current week (Monday through Friday), with emphasis on:
+  - Agendas posted in the last 48-72 hours
+  - Late-posted or revised agendas since Monday's sweep
+  - Meetings that may have been missed earlier in the week
+
+Deliver a consolidated weekly intelligence summary. Every section must appear
+even if empty.
+
+OUTPUT FORMAT:
+
+PRIORITY — EMC MENTIONS
+[Finding with exact quoted language OR "Nothing to report."]
+
+LATE AND REVISED AGENDAS
+[Per-entity findings for any agendas posted/updated since Monday OR
+"Nothing new since Monday sweep."]
+
+LEGISLATIVE UPDATE
+[Texas Legislature and US Congress activity this week OR "Nothing to report."]
+
+CAMPAIGN INTELLIGENCE
+TX-21 · [development or "Nothing to report."]
+TX-23 · [development or "Nothing to report."]
+TX-15 · [development or "Nothing to report."]
+TX-28 · [development or "Nothing to report."]
+TX-34 · [development or "Nothing to report."]
+
+GRANTS AND OPPORTUNITIES
+[New grant announcements and RFP/RFQ postings from the last 7 days OR
+"Nothing to report."]
+
+{INDIRECT_SIGNALS}
+
+WEEKLY SUMMARY
+- Jurisdictions checked: 8
+- EMC mentions: [count or "None"]
+- Grant deadlines requiring action: [list or "None"]
 
 STATUS
-================================================================
-Monday agenda sweep complete. Next sweep: Daily tomorrow at 7:30 AM CT;
-Friday weekly wrap at end of week.
-"""
-
-# Used to wrap the per-URL and per-district results into a Friday brief
-FRIDAY_WRAP_HEADER = """FRIDAY AFTERNOON WEEKLY WRAP
-{date}
-
-LATE AND REVISED AGENDAS — Monitored Jurisdictions
-================================================================
-{agendas}
-
-CAMPAIGN INTELLIGENCE — Texas Congressional Races
-================================================================
-{districts}
-
-STATUS
-================================================================
 Friday weekly wrap complete. Next sweep: Monday at 7:30 AM CT.
 """
 
 # ─────────────────────────────────────────
 # HELPERS
 # ─────────────────────────────────────────
-def log(msg):
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[{timestamp}] {msg}")
-
-
 def clean_html(html):
-    """Strip HTML to readable text — used by Daily Sweep's Jina scrape."""
     soup = BeautifulSoup(html, "html.parser")
     for tag in soup(["script", "style", "nav", "footer", "header", "meta", "link"]):
         tag.decompose()
@@ -263,8 +278,8 @@ def clean_html(html):
     return "\n".join(lines)
 
 
-def fetch_url(url, char_limit=4000):
-    """Fetch a URL via Jina Reader, clean it, and truncate. Daily Sweep only."""
+def fetch_url(url, char_limit=8000):
+    """Fetch a URL via Jina Reader, clean it, and truncate."""
     try:
         r = requests.get(
             f"https://r.jina.ai/{url}",
@@ -273,17 +288,18 @@ def fetch_url(url, char_limit=4000):
         )
         if r.status_code == 200:
             content = clean_html(r.text)[:char_limit]
-            log(f"  Jina OK — {len(content)} chars from {url}")
+            print(f"  OK - {len(content)} chars")
             return content
-        log(f"  Jina failed: {r.status_code} for {url}")
-        return f"STATUS: Failed {r.status_code}"
+        else:
+            print(f"  Failed: {r.status_code}")
+            return f"STATUS: Failed {r.status_code}"
     except Exception as e:
-        log(f"  Jina error: {e} for {url}")
+        print(f"  Error: {e}")
         return f"STATUS: Error - {str(e)}"
 
 
 def call_perplexity(sys_prompt, user_content, recency_filter="day"):
-    """Single Perplexity sonar-pro call."""
+    """Call Perplexity sonar-pro with system + user messages."""
     response = requests.post(
         "https://api.perplexity.ai/chat/completions",
         headers={
@@ -303,8 +319,18 @@ def call_perplexity(sys_prompt, user_content, recency_filter="day"):
     return response.json()["choices"][0]["message"]["content"]
 
 
+def log(msg):
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"[{timestamp}] {msg}")
+
+
 def classify_priority(content):
-    """Tier briefs P1 / P2 / P3 for the dashboard."""
+    """
+    V2 enhancement: tier findings P1 / P2 / P3.
+      P1 — Direct EMC / Ernie / Janice mention
+      P2 — Indirect signal (third-party consultant, prof services agreement, etc.)
+      P3 — Context only (lege, campaign, grant) — default
+    """
     lower = content.lower()
     p1_markers = [
         "emc strategy group", "ernie gonzalez", "janice gonzalez",
@@ -323,161 +349,75 @@ def classify_priority(content):
 
 
 # ─────────────────────────────────────────
-# PER-URL AND PER-DISTRICT CALLS (Monday and Friday)
-# ─────────────────────────────────────────
-def fetch_jurisdiction_agenda(jurisdiction, url, friday_context=False):
-    """One Perplexity call for one jurisdiction's official agenda URL."""
-    context_note = ""
-    if friday_context:
-        context_note = (
-            "This is a Friday wrap call — emphasize agendas posted in the last "
-            "48-72 hours, late-posted or revised agendas since Monday's sweep, "
-            "and any meetings that may have been missed earlier in the week.\n\n"
-        )
-
-    user_prompt = (
-        f"{context_note}"
-        f"Jurisdiction: {jurisdiction}\n"
-        f"Read this official agenda page directly and find the upcoming "
-        f"agendas: {url}\n\n"
-        f"Return your output in the per-entity template from the system prompt, "
-        f"using \"{jurisdiction}\" as the jurisdiction header."
-    )
-    return call_perplexity(
-        JURISDICTION_AGENDA_SYS_PROMPT,
-        user_prompt,
-        recency_filter="week",
-    )
-
-
-def fetch_district_news(district):
-    """One Perplexity call for one Congressional district."""
-    user_prompt = (
-        f"What are the latest news in {district}? Focus on candidate "
-        f"developments, withdrawals, endorsements, and any material changes "
-        f"from the last 7 days. Use the output template from your system "
-        f"prompt with \"{district}\" as the header."
-    )
-    return call_perplexity(
-        DISTRICT_NEWS_SYS_PROMPT,
-        user_prompt,
-        recency_filter="week",
-    )
-
-
-# ─────────────────────────────────────────
 # MONDAY AGENDA SWEEP
 # ─────────────────────────────────────────
 def monday_agenda_sweep():
     log("Starting Monday Morning Agenda Sweep (V2)...")
+    scraped = ""
+    agenda_links = []
 
-    agenda_blocks = []
-    for jurisdiction, url in JURISDICTION_AGENDAS:
-        log(f"  Perplexity call: {jurisdiction}")
-        try:
-            block = fetch_jurisdiction_agenda(jurisdiction, url, friday_context=False)
-            agenda_blocks.append(block)
-        except Exception as e:
-            log(f"  ERROR fetching {jurisdiction}: {e}")
-            agenda_blocks.append(
-                f"{jurisdiction}\n- Error: could not retrieve agenda this run."
-            )
+    for url in AGENDA_URLS:
+        log(f"Fetching {url}...")
+        content = fetch_url(url, char_limit=8000)
+        scraped += f"\n\n{'='*50}\nSOURCE: {url}\n{'='*50}\n{content}\n"
 
-    district_blocks = []
-    for district in CONGRESSIONAL_DISTRICTS:
-        log(f"  Perplexity call: {district}")
-        try:
-            block = fetch_district_news(district)
-            district_blocks.append(block)
-        except Exception as e:
-            log(f"  ERROR fetching {district}: {e}")
-            district_blocks.append(f"{district}\n- Error: could not retrieve news this run.")
+        # Extract AgendaViewer / agenda detail links for follow-up fetching
+        for line in content.split("\n"):
+            if "AgendaViewer" in line or "agenda" in line.lower():
+                links = re.findall(r"https?://[^\s\)\"]+", line)
+                for link in links:
+                    if "AgendaViewer" in link and link not in agenda_links:
+                        agenda_links.append(link)
 
-    final = MONDAY_WRAP_HEADER.format(
-        date=datetime.now().strftime("%A, %B %d, %Y"),
-        agendas="\n\n".join(agenda_blocks),
-        districts="\n\n".join(district_blocks),
+    log(f"Found {len(agenda_links)} agenda viewer links - fetching up to 5...")
+    for link in agenda_links[:5]:
+        log(f"  Fetching agenda detail: {link}")
+        detail = fetch_url(link, char_limit=5000)
+        scraped += f"\n\n{'='*50}\nAGENDA DETAIL: {link}\n{'='*50}\n{detail}\n"
+
+    log(f"Total scraped content: {len(scraped)} chars")
+    log("Sending to Perplexity for analysis...")
+
+    result = call_perplexity(
+        AGENDA_SYS_PROMPT,
+        f"Extract all meeting agendas from this scraped content. "
+        f"Cover all 8 monitored jurisdictions:\n\n{scraped}",
+        recency_filter="week",
     )
 
     log("Monday Agenda Sweep complete.")
     print("\n" + "=" * 60)
-    print(final)
+    print("MONDAY MORNING AGENDA SWEEP (V2)")
+    print("=" * 60)
+    print(result)
     print("=" * 60 + "\n")
 
-    send_to_dashboard("monday_agenda", final)
+    send_to_dashboard("monday_agenda", result)
 
 
 # ─────────────────────────────────────────
-# FRIDAY SWEEP — WEEKLY WRAP
-# ─────────────────────────────────────────
-def friday_sweep():
-    log("Starting Friday Afternoon Weekly Wrap (V2)...")
-
-    agenda_blocks = []
-    for jurisdiction, url in JURISDICTION_AGENDAS:
-        log(f"  Perplexity call: {jurisdiction} (Friday context)")
-        try:
-            block = fetch_jurisdiction_agenda(jurisdiction, url, friday_context=True)
-            agenda_blocks.append(block)
-        except Exception as e:
-            log(f"  ERROR fetching {jurisdiction}: {e}")
-            agenda_blocks.append(
-                f"{jurisdiction}\n- Error: could not retrieve agenda this run."
-            )
-
-    district_blocks = []
-    for district in CONGRESSIONAL_DISTRICTS:
-        log(f"  Perplexity call: {district}")
-        try:
-            block = fetch_district_news(district)
-            district_blocks.append(block)
-        except Exception as e:
-            log(f"  ERROR fetching {district}: {e}")
-            district_blocks.append(f"{district}\n- Error: could not retrieve news this run.")
-
-    final = FRIDAY_WRAP_HEADER.format(
-        date=datetime.now().strftime("%A, %B %d, %Y"),
-        agendas="\n\n".join(agenda_blocks),
-        districts="\n\n".join(district_blocks),
-    )
-
-    log("Friday Sweep complete.")
-    print("\n" + "=" * 60)
-    print(final)
-    print("=" * 60 + "\n")
-
-    send_to_dashboard("friday_weekly", final)
-
-
-# ─────────────────────────────────────────
-# DAILY EMC MONITORING SWEEP — Jina scrape + Perplexity synthesis
+# DAILY EMC MONITORING SWEEP
 # ─────────────────────────────────────────
 def daily_monitoring_sweep():
     log("Starting Daily EMC Monitoring Sweep (V2)...")
 
-    # Step 1: Jina scrape the news/gov sources
-    scraped = ""
-    for url in NEWS_AND_GOV_URLS:
-        log(f"  Scraping {url}...")
-        content = fetch_url(url, char_limit=3000)
-        scraped += f"\n\n{'='*50}\nSOURCE: {url}\n{'='*50}\n{content}\n"
+    # Build the explicit source domain hint from NEWS_AND_GOV_URLS
+    source_hint = "\n".join(f"  - {u}" for u in NEWS_AND_GOV_URLS)
 
-    log(f"Total scraped: {len(scraped)} chars across {len(NEWS_AND_GOV_URLS)} sources")
+    user_query = f"""Run the V2 Daily Sweep now. Search the web for any direct or indirect
+mentions related to EMC Strategy Group, Ernie Gonzalez Jr, and Janice Gonzalez
+across Texas news, government records, contract awards, meeting minutes, and
+public announcements in the last 24-48 hours.
 
-    # Step 2: Hand the scraped content to Perplexity for synthesis +
-    # live search of anything we didn't scrape
-    user_query = f"""Run the V2 Daily Sweep now. Below is scraped content from
-EMC's monitored news and government sources. Analyze it AND run a live web
-search for any additional recent developments in the last 24-48 hours related
-to EMC Strategy Group, Ernie Gonzalez Jr, or Janice Gonzalez and the monitored
-jurisdictions.
+Monitored jurisdictions:
+{chr(10).join(f"  - {j}" for j in JURISDICTIONS)}
 
-Cover all six search areas listed in your system instructions. Report only
-verified findings from the last 48 hours.
+Also scan these supplementary news/gov sources for indirect signals:
+{source_hint}
 
-SCRAPED CONTENT:
-
-{scraped}
+Cover all six search areas listed in your instructions (Property Search,
+Websites Scraping, Agenda Monitoring, Legislative/Policy, Campaign/Political,
+News/Media). Report only verified findings from the last 48 hours.
 """
 
     result = call_perplexity(
@@ -497,7 +437,52 @@ SCRAPED CONTENT:
 
 
 # ─────────────────────────────────────────
-# COMBINED DAILY RUN — 7:30 AM CT
+# FRIDAY SWEEP — WEEKLY WRAP
+# ─────────────────────────────────────────
+def friday_sweep():
+    log("Starting Friday Afternoon Weekly Wrap (V2)...")
+    scraped = ""
+
+    # Re-scrape agendas to catch late/revised postings since Monday
+    for url in AGENDA_URLS:
+        log(f"Fetching {url}...")
+        content = fetch_url(url, char_limit=5000)
+        scraped += f"\n\n{'='*50}\nSOURCE: {url}\n{'='*50}\n{content}\n"
+
+    log(f"Agenda scrape complete - {len(scraped)} chars")
+    log("Sending to Perplexity for Friday weekly wrap...")
+
+    user_query = f"""Run the V2 Friday Weekly Wrap. Analyze this week's scraped agenda
+content with emphasis on late-posted or revised agendas since Monday.
+Also pull in Texas Legislature, US Congress, TX-21/23/15/28/34 campaign
+intelligence, and any new grant or RFP announcements from the last 7 days.
+
+Monitored jurisdictions:
+{chr(10).join(f"  - {j}" for j in JURISDICTIONS)}
+
+Scraped agenda content:
+
+{scraped}
+"""
+
+    result = call_perplexity(
+        FRIDAY_SYS_PROMPT,
+        user_query,
+        recency_filter="week",
+    )
+
+    log("Friday Sweep complete.")
+    print("\n" + "=" * 60)
+    print("FRIDAY WEEKLY WRAP (V2)")
+    print("=" * 60)
+    print(result)
+    print("=" * 60 + "\n")
+
+    send_to_dashboard("friday_weekly", result)
+
+
+# ─────────────────────────────────────────
+# COMBINED DAILY RUN — 7:30 AM CT every day
 # ─────────────────────────────────────────
 def daily_run():
     today = datetime.now().strftime("%A")
@@ -511,15 +496,13 @@ def daily_run():
 
     # Daily EMC monitoring runs every day
     daily_monitoring_sweep()
-    monday_agenda_sweep()
-    friday_sweep()
 
 
 # ─────────────────────────────────────────
 # BASE44 DASHBOARD POST
 # ─────────────────────────────────────────
 def send_to_dashboard(sweep_type, content):
-    """Push brief to Base44 with priority tier (P1/P2/P3)."""
+    """V2: pushes brief to Base44 with priority tier (P1/P2/P3)."""
     try:
         priority = classify_priority(content)
         has_priority = priority in ("P1", "P2")
@@ -536,8 +519,8 @@ def send_to_dashboard(sweep_type, content):
                 "content": content,
                 "has_priority": has_priority,
                 "has_emc_mention": has_emc_mention,
-                "priority_tier": priority,
-                "version": "v2",
+                "priority_tier": priority,          # V2 new
+                "version": "v2",                    # V2 new
             },
             headers={
                 "api_key": BASE44_API_KEY,
@@ -562,7 +545,7 @@ class HealthCheck(BaseHTTPRequestHandler):
         self.wfile.write(b"EMC Agent V2 - OK")
 
     def log_message(self, format, *args):
-        pass
+        pass  # suppress access logs
 
 
 def start_health_server():
